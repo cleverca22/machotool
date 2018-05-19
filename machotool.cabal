@@ -20,7 +20,15 @@ executable machotool
   -- other-modules:
   -- other-extensions:
   build-depends:       base >=4.10 && <4.11
-                     , macho
                      , bytestring
+                     , machotool
+                     , formatting
+                     , text
   hs-source-dirs:      src
   default-language:    Haskell2010
+library
+  hs-source-dirs:      macho-0.22/src
+  exposed-modules:     Data.Macho
+  build-depends:       base
+                     , binary
+                     , bytestring

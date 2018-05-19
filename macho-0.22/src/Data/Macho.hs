@@ -20,6 +20,7 @@ module Data.Macho ( parseMacho
                   , R_TYPE(..)
                   , Relocation(..)
                   , MachoDynamicSymbolTable(..)
+                  , LoadCommand(..)
                   , MH_FILETYPE(..)) where
 
 import Data.Binary
@@ -197,6 +198,11 @@ getMachoHeader = do
   headerSize <- liftM fromIntegral bytesRead
   return (reader, sizeofcmds, headerSize, MachoHeader cputype cpusubtype filetype flags)
 
+data LoadCommand = LoadCommand {
+    lcCommand :: LC_COMMAND
+  , lcSize :: Int
+  } deriving (Show, Eq)
+
 getLoadCommands mr fl mh = do
     empty <- isEmpty
     if empty then
@@ -207,11 +213,11 @@ getLoadCommands mr fl mh = do
         lcdata  <- getByteString (cmdsize - 8)
         lc      <- return $ runGet (getLoadCommand cmd mr lcdata fl mh) (L.fromChunks [lcdata])
         rest    <- getLoadCommands mr fl mh
-        return $ lc : rest
+        return $ (LoadCommand lc cmdsize) : rest
 
 data Macho = Macho
     { m_header   :: MachoHeader  -- ^ Header information.
-    , m_commands :: [LC_COMMAND] -- ^ List of load commands describing Mach-O contents.
+    , m_commands :: [LoadCommand] -- ^ List of load commands describing Mach-O contents.
     , m_sizeofcmds :: Int        -- ^ the size of the load-commands
     } deriving (Show, Eq)
 
@@ -318,7 +324,9 @@ data LC_COMMAND
     | LC_CODE_SIGNATURE Word32 Word32                -- ^ local of code signature
     | LC_SEGMENT_SPLIT_INFO Word32 Word32            -- ^ local of info to split segments
     | LC_DYLD_INFO_ONLY
+    | LC_OTHER Word32
     deriving (Show, Eq)
+getLoadCommand :: Word32 -> MachoReader -> B.ByteString -> B.ByteString -> MachoHeader -> Get LC_COMMAND
 getLoadCommand 0x00000001 mr lc fl mh = getSegmentCommand32 mr fl mh
 getLoadCommand 0x00000002 mr lc fl mh = getSymTabCommand mr fl mh
 getLoadCommand 0x00000004 mr lc fl mh = getThreadCommand mr LC_THREAD
@@ -344,7 +352,7 @@ getLoadCommand 0x8000001c mr lc fl mh = getRPathCommand mr lc
 getLoadCommand 0x0000001d mr lc fl mh = getLinkEditCommand mr lc LC_CODE_SIGNATURE
 getLoadCommand 0x0000001e mr lc fl mh = getLinkEditCommand mr lc LC_SEGMENT_SPLIT_INFO
 getLoadCommand 0x80000022 mr lc fl mh = return $ LC_DYLD_INFO_ONLY
-getLoadCommand a          b  c  d  e  = error $ "unknown load command: " <> (show a)
+getLoadCommand cmd        b  lc d  e  = return $ LC_OTHER cmd
 
 data VM_PROT
     = VM_PROT_READ    -- ^ read permission
@@ -564,7 +572,8 @@ nullStringAt offset      = B.takeWhile ((/=) 0) . B.drop offset
 substringAt  offset size = B.take size . B.drop offset
 getLC_STR mr lc = do
     offset <- liftM fromIntegral $ getWord32 mr
-    return $ C.unpack $ nullStringAt offset lc
+    -- offset is relative to the start of the loadcommand, getLoadCommands omited the first 8 bytes
+    return $ C.unpack $ nullStringAt (offset - 8) lc
 
 getDylibCommand :: MachoReader -> B.ByteString -> (String -> Word32 -> Word32 -> Word32 -> LC_COMMAND) -> Get LC_COMMAND
 getDylibCommand mr lc con = do
@@ -587,6 +596,7 @@ getPreboundDylibCommand mr lc = do
     modules        <- return $ B.unpack $ B.take ((nmodules `div` 8) + (nmodules `mod` 8)) $ B.drop modules_offset lc
     return $ LC_PREBOUND_DYLIB name modules
 
+getThreadCommand :: MachoReader -> ([ (Word32, [Word32]) ] -> LC_COMMAND) -> Get LC_COMMAND
 getThreadCommand mr con = do
     let getThreadCommand_ mr = do
         empty <- isEmpty
@@ -1054,7 +1064,7 @@ getUUIDCommand mr = do
 
 getRPathCommand mr lc = do
     name_offset           <- liftM fromIntegral $ getWord32 mr
-    name                  <- return $ C.unpack $ nullStringAt name_offset lc
+    name                  <- return $ C.unpack $ nullStringAt (name_offset - 8) lc
     return $ LC_RPATH name
 
 getLinkEditCommand :: MachoReader -> B.ByteString -> (Word32 -> Word32 -> LC_COMMAND) -> Get LC_COMMAND
